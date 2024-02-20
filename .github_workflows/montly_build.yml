@@ -1,0 +1,113 @@
+name: Monthly Recovery Build
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron:  '30 19 18 * *'
+
+jobs:
+  Build:
+    runs-on: ubuntu-18.04
+    # You can use either of the ubuntu-18.04 or ubuntu-20.04 runner
+    steps:
+ 
+    # You might want to Checkout your repo first, but not mandatory
+    - name: Check Out
+      uses: actions/checkout@v3
+    # Cleanup The Actions Workspace Using Custom Composite Run Actions
+    - name: Cleanup
+      uses: rokibhasansagar/slimhub_actions@main
+      # That's it! Now use your normal steps
+
+    - name: Prepare the environment
+      run: |
+        sudo apt update
+        sudo apt -y upgrade
+        sudo apt -y install gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib libc6-dev lib32ncurses5-dev x11proto-core-dev libx11-dev tree lib32z-dev libgl1-mesa-dev libxml2-utils xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libwxgtk3.0-dev libxml2 lzop pngcrush schedtool squashfs-tools imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev python
+
+    - name: Install Python
+      run: |
+        sudo apt install software-properties-common -y
+        sudo add-apt-repository ppa:deadsnakes/ppa -y
+        sudo apt install python3.8 -y
+
+    - name: Install OpenJDK
+      uses: actions/setup-java@v3
+      with:
+        distribution: 'zulu'
+        java-version: '8'
+      
+    - name: Install repo
+      run: |
+        mkdir ~/bin
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+x ~/bin/repo
+        sudo ln -sf ~/bin/repo /usr/bin/repo
+      
+    - name: Initialize repo
+      run: |
+        mkdir workspace
+        cd workspace
+        echo "::set-output name=pwd::$(pwd)"
+        git config --global user.name "Zillion"
+        git config --global user.email "zillion@example.com"
+        repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_aosp.git -b twrp-11
+      id: pwd
+          
+    - name: Repo Sync
+      run: |
+        repo sync -j$(nproc --all) --force-sync
+      working-directory: workspace
+      
+    - name: Make it Clean
+      run: |
+        source build/envsetup.sh
+        make clean
+      working-directory: workspace
+      
+    - name: Clone device tree
+      run: |
+        git clone https://github.com/Galaxy-MT6768/teamwin_device_samsung_a31 -b android-12 ./device/samsung/a31
+        git clone https://github.com/Galaxy-MT6768/teamwin_device_samsung_a41xx -b android-12 ./device/samsung/a41
+        chmod +x device/samsung/a31/mkbootimg
+        chmod +x device/samsung/a41/mkbootimg
+      working-directory: ${{ steps.pwd.outputs.pwd }}
+      continue-on-error: true
+
+    - name: Set Swap Space
+      uses: pierotofy/set-swap-space@master
+      with:
+        swap-size-gb: 12
+      
+    - name: Getting AVBTool
+      run: |
+        rm -rf out
+        mkdir out
+        mkdir out/host
+        mkdir out/host/linux-x86
+        mkdir out/host/linux-x86/bin
+        wget -P out/host/linux-x86/bin https://raw.githubusercontent.com/Galaxy-MT6768/Galaxy_Recovery-Builder/main/files/bin/avbtool
+        chmod 777 out/host/linux-x86/bin/avbtool
+      working-directory: ${{ steps.pwd.outputs.pwd }}
+      
+    - name: Building recovery
+      run: |
+        source build/envsetup.sh
+        export ALLOW_MISSING_DEPENDENCIES=true
+        lunch twrp_a31-eng && make recoveryimage -j$(nproc --all)
+        lunch twrp_a41-eng && make recoveryimage -j$(nproc --all)
+        cp out/target/product/a31/recovery.tar out/target/product/a31/recovery_a31.tar
+        cp out/target/product/a41/recovery.tar out/target/product/a41/recovery_a41.tar
+      working-directory: ${{ steps.pwd.outputs.pwd }}
+      
+    - name: Upload to Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          workspace/image_info
+          workspace/out/target/product/a31/recovery_a31.tar
+          workspace/out/target/product/a41/recovery_a41.tar
+        name: a31_twrp-11
+        tag_name: ${{ github.run_id }}
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
